@@ -108,7 +108,7 @@ class CalilClient:
             "isbn": isbn,
             "systemid": system_id,
             "format": "json",
-            "callback": ""  # JSONPではなく純粋なJSONを取得
+            "callback": "no"  # JSON形式を取得（JSONPを無効化）
         }
 
         session = None  # セッションキー（ポーリング用）
@@ -127,15 +127,8 @@ class CalilClient:
                 )
                 response.raise_for_status()
 
-                # JSONPコールバックを除去してパース
-                text = response.text.strip()
-                if text.startswith("(") and text.endswith(");"):
-                    text = text[1:-2]
-                elif text.startswith("callback(") and text.endswith(");"):
-                    text = text[9:-2]
-
-                import json
-                data = json.loads(text)
+                # 純粋なJSONとしてパース
+                data = response.json()
 
                 # ポーリング継続判定
                 continue_flag = data.get("continue", 0)

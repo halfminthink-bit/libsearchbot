@@ -90,7 +90,8 @@ class OpenBDClient:
             response.raise_for_status()
             data = response.json()
 
-            # レスポンスが空またはNullの場合
+            # レスポンスが空またはNullの場合（[null] など）
+            # これは通信エラーではなく、単にデータなしを意味する
             if not data or data[0] is None:
                 return BookInfo(isbn=isbn)
 
@@ -98,7 +99,8 @@ class OpenBDClient:
             return self._parse_book_data(isbn, book_data)
 
         except requests.RequestException as e:
-            print(f"OpenBD API error: {e}")
+            # タイムアウトや接続エラーの場合のみエラーとして扱う
+            # （[null] の場合は上記で処理済み）
             return BookInfo(isbn=isbn)
 
     def _parse_book_data(self, isbn: str, data: dict) -> BookInfo:

@@ -17,7 +17,7 @@ from modules.collector.calil_api import CalilClient
 # ===========================================
 # テストデータ（デフォルト値）
 # ===========================================
-DEFAULT_ISBN = "9784798126708"  # リーダブルコード
+DEFAULT_ISBN = "9784065366431"  # 変な家2
 DEFAULT_SYSTEM_ID = "Tokyo_Minato"  # 東京都港区
 
 # モックモードを使用するかどうか（APIが利用できない環境ではTrueに設定）
