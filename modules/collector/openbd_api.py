@@ -51,6 +51,24 @@ class OpenBDClient:
             description="コードは理解しやすくなければならない。",
             cover_url="https://cover.openbd.jp/9784873115658.jpg"
         ),
+        "9784065366431": BookInfo(
+            isbn="9784065366431",
+            title="変な家2 ～11の間取り図～",
+            author="雨穴",
+            publisher="講談社",
+            pubdate="2024-03",
+            description="累計200万部突破の大ベストセラー『変な家』待望の続編。不動産ミステリーの新境地。",
+            cover_url="https://cover.openbd.jp/9784065366431.jpg"
+        ),
+        "9784822289607": BookInfo(
+            isbn="9784822289607",
+            title="ザ・ゴール コミック版",
+            author="エリヤフ・ゴールドラット",
+            publisher="ダイヤモンド社",
+            pubdate="2014-12",
+            description="全世界で1000万人が読んだ！製造業の常識を覆したベストセラーをコミック化。",
+            cover_url="https://cover.openbd.jp/9784822289607.jpg"
+        ),
     }
 
     def __init__(self, timeout: int = 10, use_mock: bool = False):
