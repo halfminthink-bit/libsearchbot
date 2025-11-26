@@ -76,7 +76,7 @@ Amazon等での購入リンクは以下をご参照ください。
             api_key: Anthropic APIキー（省略時は環境変数から取得）
             use_mock: モックモードを使用するかどうか
         """
-        load_dotenv()
+        load_dotenv(override=True)
 
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.use_mock = use_mock

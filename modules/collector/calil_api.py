@@ -58,7 +58,7 @@ class CalilClient:
             timeout: リクエストタイムアウト秒数
             use_mock: モックモードを使用するかどうか
         """
-        load_dotenv()
+        load_dotenv(override=True)
 
         self.appkey = appkey or os.getenv("CALIL_APPKEY")
         self.timeout = timeout

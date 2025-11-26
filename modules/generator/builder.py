@@ -1,6 +1,10 @@
 """
 記事ビルダー
 収集したデータからLLMプロンプトを作成し、最終的なMarkdown記事を生成する
+
+2段階生成方式:
+1. create_outline(): アウトライン生成
+2. create_draft(): 記事本文生成
 """
 
 import os
@@ -8,12 +12,18 @@ import sys
 from typing import Optional
 from dataclasses import dataclass
 
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
 # 親ディレクトリをパスに追加
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from modules.collector.openbd_api import BookInfo
 from modules.collector.calil_api import StockResult, LibraryStatus
 from modules.generator.llm_client import ClaudeClient, LLMResponse
+
+
+# プレースホルダー定数（テンプレートとコードで共有）
+STOCK_TABLE_PLACEHOLDER = "[[STOCK_TABLE_HERE]]"
 
 
 # 地域システムIDと日本語名のマッピング（一部）
@@ -39,49 +49,99 @@ class ArticleData:
     keyword: Optional[str] = None
 
 
+@dataclass
+class BuildResult:
+    """記事ビルド結果を格納するデータクラス"""
+    content: str
+    outline: str
+    is_mock: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
+    error: Optional[str] = None
+
+    def is_success(self) -> bool:
+        """ビルドが成功かどうか"""
+        return self.error is None and len(self.content) > 0
+
+
 class ArticleBuilder:
-    """記事ビルダークラス"""
+    """記事ビルダークラス（2段階生成対応）"""
 
-    # システムプロンプト（ペルソナ設定）
-    SYSTEM_PROMPT = """あなたは地元の図書館事情に詳しいベテラン司書兼ブックガイドです。
+    # モックアウトライン用テンプレート
+    MOCK_OUTLINE_TEMPLATE = """## 【{region_name}】『{book_title}』の在庫がある図書館・貸出状況まとめ
 
-読者に対して親しみやすく、かつ専門的な知識を持って情報を提供します。
-以下の点を意識して記事を執筆してください：
+### H2: はじめに - 『{book_title}』を無料で読む方法
+- 本の魅力を簡潔に紹介
+- 図書館なら無料で借りられることを訴求
 
-- 読者が「この本を読みたい！」と思えるような魅力的な導入
-- 図書館を利用するメリットを伝える
-- 具体的で実用的な情報を提供する
-- 借りられなかった場合の代替案（電子書籍、購入など）も提示する
+### H2: {region_name}の図書館での蔵書・貸出状況
+- {stock_table_placeholder}
+- 貸出状況の見方を解説
 
-重要: 在庫状況テーブルは最新のAPI取得結果です。改変せずにそのまま記事内のしかるべき場所に配置してください。"""
+### H2: {region_name}の図書館ガイド
+- 主要図書館へのアクセス
+- 図書館カードの作り方
+- 便利なサービス（予約、取り寄せなど）
 
-    # プロンプトテンプレート
-    PROMPT_TEMPLATE = """以下の情報を元に、SEOに強い図書館蔵書案内の記事を執筆してください。
+### H2: 借りられなかった場合の代替案
+- 予約サービスを利用する
+- 電子書籍で読む（Kindle Unlimitedなど）
+- 購入する（Amazonリンク）
 
-## 書籍情報
-- タイトル: {title}
-- 著者: {author}
-- 出版社: {publisher}
-- 出版日: {pubdate}
-- ISBN: {isbn}
-{description_section}
+### H2: まとめ
+- 図書館利用のメリット再確認
+- 行動を促すCTA
+"""
 
-## 対象地域
-{region_name}
+    # モック記事用テンプレート
+    MOCK_ARTICLE_TEMPLATE = """# 【{region_name}】『{book_title}』の在庫がある図書館・貸出状況まとめ
 
-## 蔵書状況テーブル（※このテーブルは最新のAPI取得結果なので、改変せずにそのまま記事内のしかるべき場所に配置してください）
+## はじめに - 『{book_title}』を無料で読む方法
+
+こんにちは！地元の図書館事情に詳しいベテラン司書です。
+
+今回は **『{book_title}』** （{author}著）を{region_name}エリアの図書館で借りる方法をご紹介しますね。
+
+この本、とても人気がありますよね。でも、わざわざ購入しなくても、お近くの図書館で無料で借りられるかもしれません！
+
+## {region_name}の図書館での蔵書・貸出状況
+
+さっそく、{region_name}の図書館での在庫状況を見ていきましょう。
 
 {stock_table}
 
-## 記事の構成要件
-1. **タイトル**: 【{region_name}】『{title}』の在庫がある図書館・貸出状況まとめ
-2. **導入部**: この本の魅力と「無料で読むなら図書館」という訴求（2-3段落）
-3. **蔵書状況セクション**: 上記のテーブルをそのまま掲載し、簡単な解説を付ける
-4. **図書館ガイドセクション**: 対象地域の図書館の一般的な特徴やアクセス情報
-5. **借りられなかった場合セクション**: 予約方法、電子書籍、Amazon購入への誘導
-6. **まとめ**: 図書館利用のメリットを改めて伝える
+上の表で「貸出可」となっている図書館では、今すぐ借りることができますよ。
 
-Markdown形式で出力してください。"""
+## {region_name}の図書館ガイド
+
+{region_name}には複数の図書館があり、それぞれ特色があります。
+
+図書館カードをお持ちでない方は、お住まいの地域の図書館で簡単に作れます。身分証明書をお忘れなく！
+
+また、ほとんどの図書館ではインターネットからの予約サービスも利用できます。貸出中の本も予約しておけば、返却され次第連絡がもらえますよ。
+
+## 借りられなかった場合の代替案
+
+人気の本は貸出中のことも多いですよね。そんなときの選択肢をご紹介します。
+
+### 予約サービスを利用する
+
+貸出中でも予約しておけば、順番が来たら借りられます。
+
+### 電子書籍で読む
+
+Kindle Unlimitedなら、対象の本が読み放題です。
+
+### 購入する
+
+どうしても今すぐ読みたい方は、[Amazonで見る](https://www.amazon.co.jp/dp/{isbn}?tag=mytag-22) から購入もできます。
+
+## まとめ
+
+『{book_title}』は{region_name}の図書館で無料で読むことができます。
+
+ぜひお近くの図書館を訪れてみてくださいね！
+"""
 
     def __init__(self, llm_client: Optional[ClaudeClient] = None):
         """
@@ -89,6 +149,13 @@ Markdown形式で出力してください。"""
             llm_client: LLMクライアント（省略時は新規作成）
         """
         self.llm_client = llm_client or ClaudeClient()
+
+        # Jinja2環境の初期化
+        template_dir = os.path.join(os.path.dirname(__file__), "templates")
+        self.jinja_env = Environment(
+            loader=FileSystemLoader(template_dir),
+            autoescape=select_autoescape(['html', 'xml'])
+        )
 
     def format_stock_table(self, stock_result: StockResult) -> str:
         """
@@ -140,48 +207,110 @@ Markdown形式で出力してください。"""
         """システムIDから日本語の地域名を取得"""
         return REGION_NAMES.get(system_id, system_id)
 
-    def create_prompt(
+    def create_outline(
         self,
         book_info: BookInfo,
-        stock_result: StockResult,
-        region_name: Optional[str] = None
-    ) -> str:
+        region_name: str
+    ) -> LLMResponse:
         """
-        LLMへのプロンプトを作成する
+        アウトラインを生成する（Phase 1）
 
         Args:
             book_info: 書籍情報
-            stock_result: 蔵書検索結果
-            region_name: 地域名（省略時はシステムIDから推測）
+            region_name: 地域名
 
         Returns:
-            str: プロンプトテキスト
+            LLMResponse: 生成されたアウトライン
         """
-        # 地域名の取得
-        if not region_name:
-            region_name = self.get_region_name(stock_result.system_id)
+        # Jinja2テンプレートを読み込み
+        template = self.jinja_env.get_template("outline_prompt.j2")
 
-        # 蔵書テーブルの作成
-        stock_table = self.format_stock_table(stock_result)
-
-        # 内容紹介セクション
-        description_section = ""
-        if book_info.description:
-            description_section = f"- 内容紹介: {book_info.description[:300]}..."
-
-        # プロンプトの組み立て
-        prompt = self.PROMPT_TEMPLATE.format(
-            title=book_info.title or "不明",
+        # プロンプトをレンダリング
+        prompt = template.render(
+            book_title=book_info.title or "不明",
             author=book_info.author or "不明",
             publisher=book_info.publisher or "不明",
-            pubdate=book_info.pubdate or "不明",
-            isbn=book_info.isbn,
-            description_section=description_section,
+            description=book_info.description[:300] if book_info.description else "情報なし",
             region_name=region_name,
-            stock_table=stock_table
+            stock_table_placeholder=STOCK_TABLE_PLACEHOLDER
         )
 
-        return prompt
+        # モックモードの場合
+        if self.llm_client.use_mock:
+            mock_outline = self.MOCK_OUTLINE_TEMPLATE.format(
+                book_title=book_info.title or "書籍タイトル",
+                region_name=region_name,
+                stock_table_placeholder=STOCK_TABLE_PLACEHOLDER
+            )
+            return LLMResponse(
+                content=mock_outline,
+                model="mock",
+                is_mock=True
+            )
+
+        # LLMでアウトライン生成
+        return self.llm_client.generate(
+            prompt=prompt,
+            system_prompt="あなたはSEOに強いウェブメディアの編集者です。",
+            temperature=0.5
+        )
+
+    def create_draft(
+        self,
+        book_info: BookInfo,
+        region_name: str,
+        stock_table_str: str,
+        outline: str
+    ) -> LLMResponse:
+        """
+        記事本文を生成する（Phase 2）
+
+        Args:
+            book_info: 書籍情報
+            region_name: 地域名
+            stock_table_str: 在庫テーブル文字列
+            outline: アウトライン
+
+        Returns:
+            LLMResponse: 生成された記事本文
+        """
+        # Jinja2テンプレートを読み込み
+        template = self.jinja_env.get_template("draft_prompt.j2")
+
+        # プロンプトをレンダリング
+        prompt = template.render(
+            book_title=book_info.title or "不明",
+            author=book_info.author or "不明",
+            description=book_info.description[:300] if book_info.description else "情報なし",
+            region_name=region_name,
+            outline=outline,
+            stock_table_placeholder=STOCK_TABLE_PLACEHOLDER,
+            stock_table_string=stock_table_str,
+            isbn=book_info.isbn
+        )
+
+        # モックモードの場合
+        if self.llm_client.use_mock:
+            mock_article = self.MOCK_ARTICLE_TEMPLATE.format(
+                book_title=book_info.title or "書籍タイトル",
+                author=book_info.author or "著者名",
+                region_name=region_name,
+                stock_table=stock_table_str,
+                isbn=book_info.isbn
+            )
+            return LLMResponse(
+                content=mock_article,
+                model="mock",
+                is_mock=True
+            )
+
+        # LLMで記事生成
+        return self.llm_client.generate(
+            prompt=prompt,
+            system_prompt="あなたは地元の図書館事情に詳しいベテラン司書兼ブックガイドです。",
+            temperature=0.7,
+            max_tokens=8192
+        )
 
     def build_article(
         self,
@@ -189,9 +318,9 @@ Markdown形式で出力してください。"""
         stock_result: StockResult,
         region_name: Optional[str] = None,
         use_mock: bool = False
-    ) -> LLMResponse:
+    ) -> BuildResult:
         """
-        記事を生成する
+        記事を生成する（2段階生成のオーケストレーター）
 
         Args:
             book_info: 書籍情報
@@ -200,35 +329,61 @@ Markdown形式で出力してください。"""
             use_mock: モックモードを使用するか
 
         Returns:
-            LLMResponse: 生成された記事を含むレスポンス
+            BuildResult: 生成された記事を含む結果
         """
         if not region_name:
             region_name = self.get_region_name(stock_result.system_id)
-
-        # プロンプトの作成
-        prompt = self.create_prompt(book_info, stock_result, region_name)
-        stock_table = self.format_stock_table(stock_result)
-
-        # モックモード用のコンテキスト
-        mock_context = {
-            "title": book_info.title or "書籍タイトル",
-            "author": book_info.author or "著者名",
-            "region": region_name,
-            "stock_table": stock_table
-        }
 
         # モックモードの設定
         if use_mock and not self.llm_client.use_mock:
             self.llm_client.use_mock = True
 
-        # LLMで記事を生成
-        response = self.llm_client.generate(
-            prompt=prompt,
-            system_prompt=self.SYSTEM_PROMPT,
-            mock_context=mock_context
+        total_input_tokens = 0
+        total_output_tokens = 0
+
+        # Phase 1: アウトライン生成
+        print("    Phase 1: アウトライン生成中...")
+        outline_response = self.create_outline(book_info, region_name)
+
+        if not outline_response.is_success():
+            return BuildResult(
+                content="",
+                outline="",
+                error=f"Outline generation failed: {outline_response.error}"
+            )
+
+        total_input_tokens += outline_response.input_tokens
+        total_output_tokens += outline_response.output_tokens
+
+        # 在庫テーブルを生成
+        stock_table_str = self.format_stock_table(stock_result)
+
+        # Phase 2: 記事本文生成
+        print("    Phase 2: 記事本文生成中...")
+        draft_response = self.create_draft(
+            book_info,
+            region_name,
+            stock_table_str,
+            outline_response.content
         )
 
-        return response
+        if not draft_response.is_success():
+            return BuildResult(
+                content="",
+                outline=outline_response.content,
+                error=f"Draft generation failed: {draft_response.error}"
+            )
+
+        total_input_tokens += draft_response.input_tokens
+        total_output_tokens += draft_response.output_tokens
+
+        return BuildResult(
+            content=draft_response.content,
+            outline=outline_response.content,
+            is_mock=outline_response.is_mock or draft_response.is_mock,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens
+        )
 
     def save_article(self, content: str, filepath: str) -> bool:
         """
@@ -278,16 +433,28 @@ if __name__ == "__main__":
         ]
     )
 
-    print("Testing ArticleBuilder")
+    print("Testing ArticleBuilder (2-phase generation)")
     print("=" * 60)
 
-    builder = ArticleBuilder()
+    # モックモードでテスト
+    from modules.generator.llm_client import ClaudeClient
+    client = ClaudeClient(use_mock=True)
+    builder = ArticleBuilder(llm_client=client)
 
     # テーブルフォーマットのテスト
     print("\n[Stock Table]")
     print(builder.format_stock_table(stock))
 
-    # プロンプト作成のテスト
-    print("\n[Generated Prompt]")
-    prompt = builder.create_prompt(book, stock)
-    print(prompt[:1000] + "...")
+    # 2段階生成のテスト
+    print("\n[2-Phase Article Generation]")
+    result = builder.build_article(book, stock)
+
+    if result.is_success():
+        print(f"Success! Article length: {len(result.content)} chars")
+        print(f"Is Mock: {result.is_mock}")
+        print("\n--- Outline ---")
+        print(result.outline[:500] + "...")
+        print("\n--- Article Preview ---")
+        print(result.content[:800] + "...")
+    else:
+        print(f"Error: {result.error}")
