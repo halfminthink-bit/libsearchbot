@@ -43,14 +43,19 @@
 4. **アフィリエイトリンクの挿入**:
    代替案セクションには、以下のHTMLブロックを**そのまま**記事に含めてください（変更厳禁）:
 
-   ▼Kindle Unlimited プロモーション▼
    ```html
-   <a href="{{ kindle_url }}" target="_blank" rel="noopener">📚 Kindle Unlimitedで読む</a>
-   ```
-
-   ▼Audible プロモーション▼
-   ```html
-   <a href="{{ audible_url }}" target="_blank" rel="noopener">🎧 Audibleで聴く</a>
+   <div class="book-promo-box" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; margin: 20px 0; color: white; text-align: center;">
+     <p style="font-size: 1.1em; margin-bottom: 15px;">📖 この本を<b>今すぐ</b>読む方法</p>
+     <div style="margin-top: 15px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+       <a href="{{ kindle_url }}" target="_blank" rel="noopener" style="background: #FF9900; color: white; padding: 12px 24px; border-radius: 5px; text-decoration: none; font-weight: bold;">📚 Kindle Unlimited (30日無料)</a>
+       <a href="{{ audible_url }}" target="_blank" rel="noopener" style="background: #F7971E; color: white; padding: 12px 24px; border-radius: 5px; text-decoration: none; font-weight: bold;">🎧 Audibleで聴く (30日無料)</a>
+     </div>
+     <p style="font-size: 0.9em; margin-top: 15px;">
+       <b>忙しいあなたへ：</b><br>
+       予約待ちの間に「聴く読書」でインプットを済ませる人が増えています。<br>
+       通勤中や家事の合間に、倍速再生でサクッと読了できます。
+     </p>
+   </div>
    ```
 
 Markdown形式の記事全文を出力してください。

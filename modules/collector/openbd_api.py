@@ -69,6 +69,51 @@ class OpenBDClient:
             description="全世界で1000万人が読んだ！製造業の常識を覆したベストセラーをコミック化。",
             cover_url="https://cover.openbd.jp/9784822289607.jpg"
         ),
+        "9784478025819": BookInfo(
+            isbn="9784478025819",
+            title="嫌われる勇気",
+            author="岸見一郎, 古賀史健",
+            publisher="ダイヤモンド社",
+            pubdate="2013-12",
+            description="「あの人」の期待を満たすために生きてはいけない。アドラー心理学の決定版。",
+            cover_url="https://cover.openbd.jp/9784478025819.jpg"
+        ),
+        "9784167915643": BookInfo(
+            isbn="9784167915643",
+            title="コンビニ人間",
+            author="村田沙耶香",
+            publisher="文藝春秋",
+            pubdate="2018-09",
+            description="芥川賞受賞作。コンビニ店員として完璧に働く女性の物語。",
+            cover_url="https://cover.openbd.jp/9784167915643.jpg"
+        ),
+        "9784101010168": BookInfo(
+            isbn="9784101010168",
+            title="人間失格",
+            author="太宰治",
+            publisher="新潮社",
+            pubdate="2006-01",
+            description="太宰治の代表作。「恥の多い生涯を送ってきました」で始まる自伝的小説。",
+            cover_url="https://cover.openbd.jp/9784101010168.jpg"
+        ),
+        "9784004140818": BookInfo(
+            isbn="9784004140818",
+            title="君たちはどう生きるか",
+            author="吉野源三郎",
+            publisher="岩波書店",
+            pubdate="1982-11",
+            description="人間としてどう生きるべきかを問う不朽の名作。",
+            cover_url="https://cover.openbd.jp/9784004140818.jpg"
+        ),
+        "9784166612130": BookInfo(
+            isbn="9784166612130",
+            title="サピエンス全史 上",
+            author="ユヴァル・ノア・ハラリ",
+            publisher="河出書房新社",
+            pubdate="2016-09",
+            description="ホモ・サピエンスの歴史を壮大なスケールで描く世界的ベストセラー。",
+            cover_url="https://cover.openbd.jp/9784166612130.jpg"
+        ),
     }
 
     def __init__(self, timeout: int = 10, use_mock: bool = False):
