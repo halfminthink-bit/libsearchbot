@@ -288,7 +288,7 @@ class LibSearchBot:
 
         # 楽天ランキングから取得
         Logger.info("\n楽天ブックスランキングを取得中...")
-        fetcher = RankingFetcher(use_mock=self.use_mock)
+        fetcher = RankingFetcher()
         targets = fetcher.fetch_all_genres(limit_per_genre=limit_per_genre)
 
         Logger.success(f"合計 {len(targets)} 冊を取得")

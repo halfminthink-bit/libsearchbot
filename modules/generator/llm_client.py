@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 try:
     import anthropic
+    import httpx
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
@@ -33,7 +34,7 @@ class LLMResponse:
 class ClaudeClient:
     """Anthropic Claude API クライアントクラス"""
 
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    DEFAULT_MODEL = "claude-haiku-4-5"
     MAX_TOKENS = 4096
 
     # モックレスポンス用のテンプレート
@@ -83,7 +84,12 @@ Amazon等での購入リンクは以下をご参照ください。
         self.client = None
 
         if not use_mock and self.api_key and ANTHROPIC_AVAILABLE:
-            self.client = anthropic.Anthropic(api_key=self.api_key)
+            # Windowsでのハング対策：HTTP/2を無効化し、タイムアウトを設定
+            self.client = anthropic.Anthropic(
+                api_key=self.api_key,
+                http_client=httpx.Client(http2=False),
+                timeout=60.0
+            )
 
     def generate(
         self,

@@ -1,5 +1,5 @@
 """
-楽天ブックスランキングフェッチャー
+楽天ブックス検索API(売上順)からランキングを取得する
 楽天ブックスAPIからランキングを取得し、記事作成対象のISBNリストを生成する
 """
 
@@ -22,18 +22,19 @@ class TargetBook:
 
 
 class RankingFetcher:
-    """楽天ブックスAPIからランキングを取得する"""
+    """楽天ブックス検索API(売上順)からランキングを取得する"""
 
-    API_URL = "https://app.rakuten.co.jp/services/api/BooksBook/Ranking/20170404"
+    # RankingではなくSearchを使う
+    API_URL = "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404"
 
     # 狙い目ジャンルとターゲット地域のマッピング
     # 001006: ビジネス・経済・就職 -> 港区 (Tokyo_Minato)
     # 001004: 小説・エッセイ -> 世田谷区 (Tokyo_Setagaya)
     # 001008: 人文・思想・社会 -> 千代田区 (Tokyo_Chiyoda)
     GENRE_STRATEGY = {
-        "001006": "Tokyo_Minato",
-        "001004": "Tokyo_Setagaya",
-        "001008": "Tokyo_Chiyoda",
+        "001006": "Tokyo_Minato",    # ビジネス -> 港区
+        "001004": "Tokyo_Setagaya",  # 小説 -> 世田谷区
+        "001008": "Tokyo_Chiyoda"    # 人文 -> 千代田区
     }
 
     # ジャンル名の日本語マッピング
@@ -43,32 +44,12 @@ class RankingFetcher:
         "001008": "人文・思想・社会",
     }
 
-    # モックデータ（テスト用）
-    MOCK_DATA = {
-        "001006": [
-            TargetBook(isbn="9784798126708", title="リーダブルコード", genre_id="001006", suggested_region="Tokyo_Minato"),
-            TargetBook(isbn="9784822289607", title="ザ・ゴール コミック版", genre_id="001006", suggested_region="Tokyo_Minato"),
-            TargetBook(isbn="9784478025819", title="嫌われる勇気", genre_id="001006", suggested_region="Tokyo_Minato"),
-        ],
-        "001004": [
-            TargetBook(isbn="9784065366431", title="変な家2 ～11の間取り図～", genre_id="001004", suggested_region="Tokyo_Setagaya"),
-            TargetBook(isbn="9784167915643", title="コンビニ人間", genre_id="001004", suggested_region="Tokyo_Setagaya"),
-            TargetBook(isbn="9784101010168", title="人間失格", genre_id="001004", suggested_region="Tokyo_Setagaya"),
-        ],
-        "001008": [
-            TargetBook(isbn="9784004140818", title="君たちはどう生きるか", genre_id="001008", suggested_region="Tokyo_Chiyoda"),
-            TargetBook(isbn="9784166612130", title="サピエンス全史 上", genre_id="001008", suggested_region="Tokyo_Chiyoda"),
-        ],
-    }
-
-    def __init__(self, app_id: Optional[str] = None, use_mock: bool = False):
+    def __init__(self, app_id: Optional[str] = None):
         """
         Args:
             app_id: 楽天アプリID（省略時は環境変数から取得）
-            use_mock: モックモードを使用するか
         """
         self.app_id = app_id or os.getenv("RAKUTEN_APP_ID")
-        self.use_mock = use_mock or not self.app_id
 
     def fetch_targets(self, genre_id: str = "001006", limit: int = 10) -> List[TargetBook]:
         """
@@ -81,17 +62,16 @@ class RankingFetcher:
         Returns:
             List[TargetBook]: 対象書籍のリスト
         """
-        if self.use_mock:
-            return self._fetch_mock(genre_id, limit)
-
         if not self.app_id:
-            print("Warning: RAKUTEN_APP_ID is not set. Using mock data.")
-            return self._fetch_mock(genre_id, limit)
+            print("Error: RAKUTEN_APP_ID is not set.")
+            return []
 
+        # Search APIで売上順(sales)に取得することでランキング代わりにする
         params = {
             "applicationId": self.app_id,
             "booksGenreId": genre_id,
-            "hits": 30,  # 多めに取得してフィルタリングする
+            "sort": "sales",
+            "hits": 30
         }
 
         try:
@@ -102,16 +82,18 @@ class RankingFetcher:
             targets = []
             suggested_region = self.GENRE_STRATEGY.get(genre_id, "Tokyo_Minato")
 
+            # 先ほど確認したJSON構造に合わせてパース
             for obj in data.get("Items", []):
+                # ネストされたItemキーにアクセス
+                item = obj.get("Item", {})
+
                 if len(targets) >= limit:
                     break
 
-                # APIレスポンスは { "Item": { ... } } の形式でネストされている
-                item = obj.get("Item", {})
                 isbn = item.get("isbn")
                 title = item.get("title")
 
-                # ISBNがあり、かつ有効な形式のものを対象にする
+                # ISBNチェック
                 if isbn and (len(isbn) == 13 or len(isbn) == 10):
                     targets.append(TargetBook(
                         isbn=isbn,
@@ -120,19 +102,15 @@ class RankingFetcher:
                         suggested_region=suggested_region
                     ))
 
+            if not targets:
+                print(f"  Warning: No books found for genre {genre_id}")
+
             return targets
 
-        except requests.exceptions.RequestException as e:
-            print(f"Ranking fetch failed (network error): {e}")
-            return self._fetch_mock(genre_id, limit)
         except Exception as e:
+            # 失敗時は正直に空リストを返す（モックは返さない）
             print(f"Ranking fetch failed: {e}")
-            return self._fetch_mock(genre_id, limit)
-
-    def _fetch_mock(self, genre_id: str, limit: int) -> List[TargetBook]:
-        """モックデータを返す"""
-        mock_list = self.MOCK_DATA.get(genre_id, [])
-        return mock_list[:limit]
+            return []
 
     def fetch_all_genres(self, limit_per_genre: int = 5) -> List[TargetBook]:
         """
@@ -167,13 +145,16 @@ if __name__ == "__main__":
     print("Testing RankingFetcher")
     print("=" * 60)
 
-    fetcher = RankingFetcher(use_mock=True)
+    fetcher = RankingFetcher()
 
     # 単一ジャンルテスト
     print("\n[Business Genre Test]")
     targets = fetcher.fetch_targets("001006", limit=3)
-    for t in targets:
-        print(f"  - {t.isbn}: {t.title} -> {t.suggested_region}")
+    if targets:
+        for t in targets:
+            print(f"  - {t.isbn}: {t.title} -> {t.suggested_region}")
+    else:
+        print("  No books found")
 
     # 全ジャンルテスト
     print("\n[All Genres Test]")
