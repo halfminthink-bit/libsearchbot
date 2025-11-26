@@ -92,7 +92,6 @@ class RankingFetcher:
             "applicationId": self.app_id,
             "booksGenreId": genre_id,
             "hits": 30,  # 多めに取得してフィルタリングする
-            "formatVersion": 2
         }
 
         try:
@@ -103,10 +102,12 @@ class RankingFetcher:
             targets = []
             suggested_region = self.GENRE_STRATEGY.get(genre_id, "Tokyo_Minato")
 
-            for item in data.get("Items", []):
+            for obj in data.get("Items", []):
                 if len(targets) >= limit:
                     break
 
+                # APIレスポンスは { "Item": { ... } } の形式でネストされている
+                item = obj.get("Item", {})
                 isbn = item.get("isbn")
                 title = item.get("title")
 
