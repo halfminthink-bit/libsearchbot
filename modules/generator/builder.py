@@ -12,6 +12,9 @@ import sys
 from typing import Optional
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 # 親ディレクトリをパスに追加
@@ -134,7 +137,11 @@ Kindle Unlimitedなら、対象の本が読み放題です。
 
 ### 購入する
 
-どうしても今すぐ読みたい方は、[Amazonで見る](https://www.amazon.co.jp/dp/{isbn}?tag=mytag-22) から購入もできます。
+どうしても今すぐ読みたい方は、[Amazonで見る](https://www.amazon.co.jp/dp/{isbn}?tag={affiliate_tag}) から購入もできます。
+
+<a href="{kindle_url}" target="_blank" rel="noopener">📚 Kindle Unlimitedで読む</a>
+
+<a href="{audible_url}" target="_blank" rel="noopener">🎧 Audibleで聴く</a>
 
 ## まとめ
 
@@ -207,6 +214,26 @@ Kindle Unlimitedなら、対象の本が読み放題です。
         """システムIDから日本語の地域名を取得"""
         return REGION_NAMES.get(system_id, system_id)
 
+    def _calculate_scarcity(self, stock_result: StockResult) -> bool:
+        """
+        在庫逼迫度を計算する
+        貸出可の図書館が全体の30%未満の場合にTrueを返す
+
+        Args:
+            stock_result: 蔵書検索結果
+
+        Returns:
+            bool: 在庫が逼迫しているかどうか
+        """
+        if not stock_result.libraries:
+            return True  # 蔵書がない場合は逼迫とみなす
+
+        total = len(stock_result.libraries)
+        available = sum(1 for lib in stock_result.libraries if lib.status == "貸出可")
+
+        # 30%未満なら逼迫
+        return (available / total) < 0.3
+
     def create_outline(
         self,
         book_info: BookInfo,
@@ -260,7 +287,8 @@ Kindle Unlimitedなら、対象の本が読み放題です。
         book_info: BookInfo,
         region_name: str,
         stock_table_str: str,
-        outline: str
+        outline: str,
+        stock_result: Optional[StockResult] = None
     ) -> LLMResponse:
         """
         記事本文を生成する（Phase 2）
@@ -270,12 +298,21 @@ Kindle Unlimitedなら、対象の本が読み放題です。
             region_name: 地域名
             stock_table_str: 在庫テーブル文字列
             outline: アウトライン
+            stock_result: 蔵書検索結果（在庫逼迫度計算用）
 
         Returns:
             LLMResponse: 生成された記事本文
         """
         # Jinja2テンプレートを読み込み
         template = self.jinja_env.get_template("draft_prompt.j2")
+
+        # 在庫逼迫度を計算
+        is_stock_scarce = self._calculate_scarcity(stock_result) if stock_result else False
+
+        # アフィリエイト関連の環境変数を取得
+        affiliate_tag = os.getenv("AMAZON_AFFILIATE_TAG", "mytag-22")
+        kindle_url = os.getenv("KINDLE_PROMO_URL", f"https://www.amazon.co.jp/kindle-dbs/hz/signup?tag={affiliate_tag}")
+        audible_url = os.getenv("AUDIBLE_PROMO_URL", f"https://www.amazon.co.jp/hz/audible/mlp?tag={affiliate_tag}")
 
         # プロンプトをレンダリング
         prompt = template.render(
@@ -286,7 +323,11 @@ Kindle Unlimitedなら、対象の本が読み放題です。
             outline=outline,
             stock_table_placeholder=STOCK_TABLE_PLACEHOLDER,
             stock_table_string=stock_table_str,
-            isbn=book_info.isbn
+            isbn=book_info.isbn,
+            is_stock_scarce=is_stock_scarce,
+            affiliate_tag=affiliate_tag,
+            kindle_url=kindle_url,
+            audible_url=audible_url
         )
 
         # モックモードの場合
@@ -296,7 +337,10 @@ Kindle Unlimitedなら、対象の本が読み放題です。
                 author=book_info.author or "著者名",
                 region_name=region_name,
                 stock_table=stock_table_str,
-                isbn=book_info.isbn
+                isbn=book_info.isbn,
+                affiliate_tag=affiliate_tag,
+                kindle_url=kindle_url,
+                audible_url=audible_url
             )
             return LLMResponse(
                 content=mock_article,
@@ -364,7 +408,8 @@ Kindle Unlimitedなら、対象の本が読み放題です。
             book_info,
             region_name,
             stock_table_str,
-            outline_response.content
+            outline_response.content,
+            stock_result
         )
 
         if not draft_response.is_success():
