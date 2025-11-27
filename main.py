@@ -444,6 +444,7 @@ def publish_to_wordpress(
 
     Logger.info(f"サイト: {publisher.site_url}")
     Logger.info(f"ステータス: {status}")
+    Logger.info(f"上限: {limit}件" if limit else "上限: なし")
     Logger.info(f"モード: {'モック' if use_mock else '実投稿'}")
 
     results = publisher.publish_all(output_dir=output_dir, status=status, limit=limit)
@@ -485,14 +486,20 @@ def parse_args():
     )
     parser.add_argument(
         "--publish-status",
-        default="draft",
+        default="publish",
         choices=["draft", "publish", "pending"],
-        help="WordPress投稿時のステータス (default: draft)"
+        help="WordPress投稿時のステータス (default: publish)"
     )
     parser.add_argument(
         "--publish-only",
         action="store_true",
         help="記事生成をスキップし、既存ファイルの投稿のみ行う"
+    )
+    parser.add_argument(
+        "--publish-limit",
+        type=int,
+        default=5,
+        help="一度に投稿する記事数の上限 (default: 5)"
     )
     return parser.parse_args()
 
@@ -542,7 +549,8 @@ def main():
         wp_results = publish_to_wordpress(
             output_dir=OUTPUT_DIR,
             status=args.publish_status,
-            use_mock=args.mock or not wp_configured
+            use_mock=args.mock or not wp_configured,
+            limit=args.publish_limit
         )
 
         if wp_results["failed"] > 0:

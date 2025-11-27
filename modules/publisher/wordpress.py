@@ -264,6 +264,43 @@ class WordPressPublisher:
 
         return tag_ids
 
+    def _remove_h1_from_markdown(self, content: str) -> str:
+        """
+        Markdownコンテンツから最初のH1見出しを除去する
+        （WordPressのタイトルと重複するため）
+
+        Args:
+            content: Markdownコンテンツ
+
+        Returns:
+            str: H1除去後のコンテンツ
+        """
+        import re
+        # 最初のH1見出し（# で始まる行）を除去
+        # ^# で始まり、改行までの1行を削除
+        content = re.sub(r'^#\s+[^\n]+\n*', '', content, count=1)
+        return content.strip()
+
+    def _generate_slug_from_filename(self, filepath: str) -> str:
+        """
+        ファイル名からスラッグを生成する
+
+        例: Tokyo_Minato_9784798126708.md → tokyo-minato-9784798126708
+
+        Args:
+            filepath: ファイルパス
+
+        Returns:
+            str: スラッグ（英数字とハイフンのみ）
+        """
+        import os
+        filename = os.path.basename(filepath)
+        # 拡張子を除去
+        name_without_ext = filename.replace(".md", "")
+        # アンダースコアをハイフンに変換し、小文字化
+        slug = name_without_ext.replace("_", "-").lower()
+        return slug
+
     def _convert_markdown_to_html(self, markdown_content: str) -> str:
         """
         MarkdownをHTML（またはGutenbergブロック）に変換
@@ -327,6 +364,9 @@ class WordPressPublisher:
             metadata = post.metadata
             content = post.content
 
+            # 本文からH1見出しを除去（タイトル重複防止）
+            content = self._remove_h1_from_markdown(content)
+
             title = metadata.get("title", "無題")
             isbn = metadata.get("isbn", "")
             image_url = metadata.get("image_url", "")
@@ -334,7 +374,11 @@ class WordPressPublisher:
             region = metadata.get("region", "")
             author = metadata.get("author", "")
 
+            # ファイル名からスラッグを生成（日本語URL防止）
+            slug = self._generate_slug_from_filename(filepath)
+
             print(f"    Title: {title}")
+            print(f"    Slug: {slug}")
             print(f"    Genre: {genre}, Region: {region}")
 
             # 画像アップロード
@@ -362,6 +406,7 @@ class WordPressPublisher:
                 title=title,
                 content=content,
                 status=status,
+                slug=slug,
                 featured_media=media_id,
                 categories=categories,
                 tags=tag_ids,
@@ -380,6 +425,7 @@ class WordPressPublisher:
         title: str,
         content: str,
         status: str = "draft",
+        slug: Optional[str] = None,
         featured_media: Optional[int] = None,
         categories: Optional[List[int]] = None,
         tags: Optional[List[int]] = None,
@@ -392,6 +438,7 @@ class WordPressPublisher:
             title: 記事タイトル
             content: 記事本文（Markdown）
             status: 投稿ステータス
+            slug: URL用スラッグ（例: tokyo-minato-9784798126708）
             featured_media: アイキャッチ画像のメディアID
             categories: カテゴリーIDリスト
             tags: タグIDリスト
@@ -402,6 +449,7 @@ class WordPressPublisher:
         """
         if self.use_mock:
             print(f"    [Mock] Would create post: {title}")
+            print(f"    [Mock] Slug: {slug}")
             print(f"    [Mock] Status: {status}, Categories: {categories}, Tags: {tags}")
             return PublishResult(
                 success=True,
@@ -426,6 +474,10 @@ class WordPressPublisher:
                 "content": html_content,
                 "status": status,
             }
+
+            # スラッグを設定（日本語URL防止）
+            if slug:
+                post_data["slug"] = slug
 
             if featured_media:
                 post_data["featured_media"] = featured_media
