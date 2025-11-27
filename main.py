@@ -7,6 +7,7 @@ Usage:
     python main.py                    # 自動ランキングモード
     python main.py --csv path/to.csv  # CSVモード
     python main.py --mock             # モックモードで実行
+    python main.py --publish          # 生成後にWordPressへ投稿
 """
 
 import sys
@@ -16,7 +17,7 @@ import random
 import argparse
 import glob
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # プロジェクトルートをパスに追加
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +31,7 @@ from modules.collector.openbd_api import OpenBDClient
 from modules.collector.calil_api import CalilClient
 from modules.generator.llm_client import ClaudeClient
 from modules.generator.builder import ArticleBuilder, REGION_NAMES
+from modules.publisher.wordpress import WordPressPublisher
 
 
 # ===========================================
@@ -164,13 +166,22 @@ class LibSearchBot:
             "skipped": 0,
         }
 
-    def process_book(self, isbn: str, region_id: str) -> tuple[bool, str]:
+        # 生成されたファイルパスを記録
+        self.generated_files: List[str] = []
+
+    def process_book(
+        self,
+        isbn: str,
+        region_id: str,
+        genre_label: Optional[str] = None
+    ) -> Tuple[bool, str]:
         """
         1冊の書籍を処理する
 
         Args:
             isbn: ISBN
             region_id: 地域ID
+            genre_label: ジャンルラベル（例: "ビジネス・経済"）
 
         Returns:
             tuple[bool, str]: (成功/失敗, メッセージ)
@@ -178,6 +189,8 @@ class LibSearchBot:
         region_name = REGION_NAMES.get(region_id, region_id)
 
         Logger.info(f"ISBN: {isbn} / Region: {region_name}")
+        if genre_label:
+            Logger.info(f"       Genre: {genre_label}")
 
         # Step 1: OpenBD API で書籍情報を取得
         Logger.info("  [1/3] 書籍情報を取得中...")
@@ -218,21 +231,29 @@ class LibSearchBot:
 
         # Step 3: 記事を生成
         Logger.info("  [3/3] 記事を生成中 (2段階生成)...")
-        result = self.builder.build_article(book, stock, region_name)
+        result = self.builder.build_article(
+            book,
+            stock,
+            region_name,
+            genre_label=genre_label
+        )
 
         if not result.is_success():
             return False, f"記事生成エラー: {result.error}"
 
         Logger.info(f"       アウトライン: {len(result.outline)} chars / 記事: {len(result.content)} chars")
 
-        # Step 4: ファイルに保存
+        # Step 4: YAML Front Matter付きでファイルに保存
         output_filename = f"{region_id}_{isbn}.md"
         output_path = os.path.join(OUTPUT_DIR, output_filename)
 
         os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-        if not self.builder.save_article(result.content, output_path):
+        if not self.builder.save_article_with_frontmatter(result, output_path):
             return False, "ファイル保存に失敗しました"
+
+        # 生成ファイルを記録
+        self.generated_files.append(output_path)
 
         # 重複チェッカーに追加
         self.duplicate_checker.add(isbn, region_id)
@@ -266,8 +287,8 @@ class LibSearchBot:
             Logger.error(f"CSVフォーマットエラー: {e}")
             return self.stats
 
-        # TargetBookをタプルに変換
-        target_list = [(t.isbn, t.region_id) for t in targets]
+        # TargetBookをタプルに変換（genre_labelなし）
+        target_list = [(t.isbn, t.region_id, None) for t in targets]
 
         return self._run_targets(target_list)
 
@@ -293,17 +314,20 @@ class LibSearchBot:
 
         Logger.success(f"合計 {len(targets)} 冊を取得")
 
-        # TargetBookをタプルに変換
-        target_list = [(t.isbn, t.suggested_region) for t in targets]
+        # TargetBookをタプルに変換（genre_label付き）
+        target_list = [
+            (t.isbn, t.suggested_region, fetcher.get_genre_name(t.genre_id))
+            for t in targets
+        ]
 
         return self._run_targets(target_list)
 
-    def _run_targets(self, targets: List[tuple]) -> dict:
+    def _run_targets(self, targets: List[Tuple[str, str, Optional[str]]]) -> dict:
         """
         ターゲットリストを処理する共通メソッド
 
         Args:
-            targets: (isbn, region_id) のタプルリスト
+            targets: (isbn, region_id, genre_label) のタプルリスト
 
         Returns:
             dict: 実行統計
@@ -313,12 +337,12 @@ class LibSearchBot:
         unique_targets = []
         seen = set()
 
-        for isbn, region_id in targets:
+        for isbn, region_id, genre_label in targets:
             key = f"{isbn}_{region_id}"
             if key not in seen:
                 # 既存ファイルもチェック
                 if not self.duplicate_checker.is_duplicate(isbn, region_id):
-                    unique_targets.append((isbn, region_id))
+                    unique_targets.append((isbn, region_id, genre_label))
                     seen.add(key)
                 else:
                     self.stats["skipped"] += 1
@@ -337,11 +361,11 @@ class LibSearchBot:
         # 各書籍を処理
         errors = []
 
-        for i, (isbn, region_id) in enumerate(unique_targets, start=1):
+        for i, (isbn, region_id, genre_label) in enumerate(unique_targets, start=1):
             Logger.progress(i, len(unique_targets), f"『{isbn}』を処理中")
 
             try:
-                success, message = self.process_book(isbn, region_id)
+                success, message = self.process_book(isbn, region_id, genre_label)
 
                 if success:
                     self.stats["success"] += 1
@@ -390,6 +414,49 @@ class LibSearchBot:
         return self.stats
 
 
+def publish_to_wordpress(
+    output_dir: str = OUTPUT_DIR,
+    status: str = "draft",
+    use_mock: bool = False,
+    limit: Optional[int] = None
+) -> dict:
+    """
+    生成された記事をWordPressに投稿する
+
+    Args:
+        output_dir: 出力ディレクトリ
+        status: 投稿ステータス（draft/publish）
+        use_mock: モックモード
+        limit: 投稿数の上限
+
+    Returns:
+        dict: 投稿結果
+    """
+    Logger.header("WordPress投稿")
+
+    publisher = WordPressPublisher(use_mock=use_mock)
+
+    if not publisher.is_configured() and not use_mock:
+        Logger.error("WordPress認証情報が設定されていません")
+        Logger.info("以下の環境変数を設定してください:")
+        Logger.info("  WP_SITE_URL, WP_USERNAME, WP_APP_PASSWORD")
+        return {"total": 0, "success": 0, "failed": 0}
+
+    Logger.info(f"サイト: {publisher.site_url}")
+    Logger.info(f"ステータス: {status}")
+    Logger.info(f"モード: {'モック' if use_mock else '実投稿'}")
+
+    results = publisher.publish_all(output_dir=output_dir, status=status, limit=limit)
+
+    Logger.header("投稿結果サマリー")
+    Logger.info(f"総数:   {results['total']}件")
+    Logger.success(f"成功:   {results['success']}件")
+    if results["failed"] > 0:
+        Logger.error(f"失敗:   {results['failed']}件")
+
+    return results
+
+
 def parse_args():
     """コマンドライン引数をパース"""
     parser = argparse.ArgumentParser(
@@ -411,6 +478,22 @@ def parse_args():
         default=DEFAULT_LIMIT_PER_GENRE,
         help=f"自動ランキングモード時のジャンルごと取得数 (default: {DEFAULT_LIMIT_PER_GENRE})"
     )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="生成後にWordPressへ投稿する"
+    )
+    parser.add_argument(
+        "--publish-status",
+        default="draft",
+        choices=["draft", "publish", "pending"],
+        help="WordPress投稿時のステータス (default: draft)"
+    )
+    parser.add_argument(
+        "--publish-only",
+        action="store_true",
+        help="記事生成をスキップし、既存ファイルの投稿のみ行う"
+    )
     return parser.parse_args()
 
 
@@ -422,6 +505,11 @@ def main():
     calil_key = os.getenv("CALIL_APPKEY")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     rakuten_key = os.getenv("RAKUTEN_APP_ID")
+    wp_configured = all([
+        os.getenv("WP_SITE_URL"),
+        os.getenv("WP_USERNAME"),
+        os.getenv("WP_APP_PASSWORD")
+    ])
 
     if not args.mock:
         if not calil_key:
@@ -430,20 +518,36 @@ def main():
             Logger.warning("ANTHROPIC_API_KEY が設定されていません。LLMはモックを使用します。")
         if not rakuten_key and args.csv is None:
             Logger.warning("RAKUTEN_APP_ID が設定されていません。楽天APIはモックを使用します。")
+        if args.publish and not wp_configured:
+            Logger.warning("WordPress認証情報が未設定です。投稿はモックモードで実行されます。")
 
-    # ボットを実行
-    bot = LibSearchBot(use_mock=args.mock)
+    # --publish-only の場合は記事生成をスキップ
+    if not args.publish_only:
+        # ボットを実行
+        bot = LibSearchBot(use_mock=args.mock)
 
-    if args.csv:
-        # CSVモード
-        stats = bot.run_csv_mode(args.csv)
-    else:
-        # 自動ランキングモード（デフォルト）
-        stats = bot.run_ranking_mode(limit_per_genre=args.limit)
+        if args.csv:
+            # CSVモード
+            stats = bot.run_csv_mode(args.csv)
+        else:
+            # 自動ランキングモード（デフォルト）
+            stats = bot.run_ranking_mode(limit_per_genre=args.limit)
 
-    # 終了コード
-    if stats["failed"] > 0:
-        sys.exit(1)
+        # 記事生成で失敗があった場合
+        if stats["failed"] > 0 and not args.publish:
+            sys.exit(1)
+
+    # WordPress投稿
+    if args.publish or args.publish_only:
+        wp_results = publish_to_wordpress(
+            output_dir=OUTPUT_DIR,
+            status=args.publish_status,
+            use_mock=args.mock or not wp_configured
+        )
+
+        if wp_results["failed"] > 0:
+            sys.exit(1)
+
     sys.exit(0)
 
 

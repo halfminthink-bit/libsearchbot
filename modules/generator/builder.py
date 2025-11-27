@@ -61,6 +61,13 @@ class BuildResult:
     input_tokens: int = 0
     output_tokens: int = 0
     error: Optional[str] = None
+    # メタデータ（WordPress投稿用）
+    title: Optional[str] = None
+    isbn: Optional[str] = None
+    image_url: Optional[str] = None
+    genre: Optional[str] = None
+    region: Optional[str] = None
+    author: Optional[str] = None
 
     def is_success(self) -> bool:
         """ビルドが成功かどうか"""
@@ -370,7 +377,8 @@ Kindle Unlimitedなら、対象の本が読み放題です。
         book_info: BookInfo,
         stock_result: StockResult,
         region_name: Optional[str] = None,
-        use_mock: bool = False
+        use_mock: bool = False,
+        genre_label: Optional[str] = None
     ) -> BuildResult:
         """
         記事を生成する（2段階生成のオーケストレーター）
@@ -380,6 +388,7 @@ Kindle Unlimitedなら、対象の本が読み放題です。
             stock_result: 蔵書検索結果
             region_name: 地域名（省略時はシステムIDから推測）
             use_mock: モックモードを使用するか
+            genre_label: ジャンルラベル（例: "ビジネス・経済"）
 
         Returns:
             BuildResult: 生成された記事を含む結果
@@ -431,12 +440,22 @@ Kindle Unlimitedなら、対象の本が読み放題です。
         total_input_tokens += draft_response.input_tokens
         total_output_tokens += draft_response.output_tokens
 
+        # 記事タイトルを生成
+        article_title = f"【{region_name}】『{book_info.title}』の在庫がある図書館・貸出状況まとめ"
+
         return BuildResult(
             content=draft_response.content,
             outline=outline_response.content,
             is_mock=outline_response.is_mock or draft_response.is_mock,
             input_tokens=total_input_tokens,
-            output_tokens=total_output_tokens
+            output_tokens=total_output_tokens,
+            # メタデータ
+            title=article_title,
+            isbn=book_info.isbn,
+            image_url=book_info.cover_url,
+            genre=genre_label,
+            region=region_name,
+            author=book_info.author
         )
 
     def save_article(self, content: str, filepath: str) -> bool:
@@ -459,6 +478,45 @@ Kindle Unlimitedなら、対象の本が読み放題です。
             return True
         except Exception as e:
             print(f"Error saving article: {e}")
+            return False
+
+    def save_article_with_frontmatter(self, result: BuildResult, filepath: str) -> bool:
+        """
+        YAML Front Matter付きで記事をファイルに保存する
+
+        Args:
+            result: ビルド結果（メタデータ含む）
+            filepath: 保存先のファイルパス
+
+        Returns:
+            bool: 保存成功かどうか
+        """
+        try:
+            # ディレクトリがなければ作成
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+            # YAML Front Matterを構築
+            frontmatter_lines = [
+                "---",
+                f"title: \"{result.title or ''}\"",
+                f"isbn: \"{result.isbn or ''}\"",
+                f"image_url: \"{result.image_url or ''}\"",
+                f"genre: \"{result.genre or ''}\"",
+                f"region: \"{result.region or ''}\"",
+                f"author: \"{result.author or ''}\"",
+                "---",
+                "",
+            ]
+            frontmatter = "\n".join(frontmatter_lines)
+
+            # Front Matter + 本文を結合
+            full_content = frontmatter + result.content
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(full_content)
+            return True
+        except Exception as e:
+            print(f"Error saving article with frontmatter: {e}")
             return False
 
 
