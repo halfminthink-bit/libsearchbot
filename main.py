@@ -15,7 +15,6 @@ import os
 import time
 import random
 import argparse
-import glob
 from datetime import datetime
 from typing import List, Optional, Tuple
 
@@ -32,6 +31,7 @@ from modules.collector.calil_api import CalilClient
 from modules.generator.llm_client import ClaudeClient
 from modules.generator.builder import ArticleBuilder, REGION_NAMES
 from modules.publisher.wordpress import WordPressPublisher
+from modules.core.post_log import PostLogManager
 
 
 # ===========================================
@@ -104,43 +104,6 @@ class Logger:
         print(f"\n[{bar}] {percent:.0f}% ({current}/{total}) - {text}")
 
 
-class DuplicateChecker:
-    """重複チェッククラス"""
-
-    def __init__(self, output_dir: str = OUTPUT_DIR):
-        """
-        Args:
-            output_dir: 出力ディレクトリのパス
-        """
-        self.output_dir = output_dir
-        self.existing_keys = self._load_existing_keys()
-
-    def _load_existing_keys(self) -> set:
-        """既存ファイルからキー（ISBN×地域）を取得"""
-        keys = set()
-        pattern = os.path.join(self.output_dir, "*.md")
-
-        for filepath in glob.glob(pattern):
-            filename = os.path.basename(filepath)
-            # ファイル名形式: {region_id}_{isbn}.md
-            name_without_ext = filename.replace(".md", "")
-            parts = name_without_ext.rsplit("_", 1)
-            if len(parts) == 2:
-                region_id, isbn = parts
-                key = f"{isbn}_{region_id}"
-                keys.add(key)
-
-        return keys
-
-    def is_duplicate(self, isbn: str, region_id: str) -> bool:
-        """重複かどうかをチェック"""
-        key = f"{isbn}_{region_id}"
-        return key in self.existing_keys
-
-    def add(self, isbn: str, region_id: str):
-        """処理済みとしてキーを追加"""
-        key = f"{isbn}_{region_id}"
-        self.existing_keys.add(key)
 
 
 class LibSearchBot:
@@ -156,7 +119,7 @@ class LibSearchBot:
         self.calil = CalilClient(use_mock=use_mock)
         self.claude = ClaudeClient(use_mock=use_mock)
         self.builder = ArticleBuilder(llm_client=self.claude)
-        self.duplicate_checker = DuplicateChecker()
+        self.log_manager = PostLogManager()
 
         # 統計情報
         self.stats = {
@@ -255,8 +218,15 @@ class LibSearchBot:
         # 生成ファイルを記録
         self.generated_files.append(output_path)
 
-        # 重複チェッカーに追加
-        self.duplicate_checker.add(isbn, region_id)
+        # ログに登録（ステータス: generated）
+        title = result.title or f"【{region_name}】『{book.title}』の在庫がある図書館・貸出状況まとめ"
+        self.log_manager.add_entry(
+            isbn=isbn,
+            region_id=region_id,
+            title=title,
+            filepath=output_path,
+            status="generated"
+        )
 
         return True, output_path
 
@@ -340,8 +310,8 @@ class LibSearchBot:
         for isbn, region_id, genre_label in targets:
             key = f"{isbn}_{region_id}"
             if key not in seen:
-                # 既存ファイルもチェック
-                if not self.duplicate_checker.is_duplicate(isbn, region_id):
+                # CSVログで重複チェック
+                if not self.log_manager.is_exists(isbn, region_id):
                     unique_targets.append((isbn, region_id, genre_label))
                     seen.add(key)
                 else:
@@ -415,16 +385,15 @@ class LibSearchBot:
 
 
 def publish_to_wordpress(
-    output_dir: str = OUTPUT_DIR,
     status: str = "draft",
     use_mock: bool = False,
     limit: Optional[int] = None
 ) -> dict:
     """
     生成された記事をWordPressに投稿する
+    CSVログから status='generated' のエントリを取得して投稿
 
     Args:
-        output_dir: 出力ディレクトリ
         status: 投稿ステータス（draft/publish）
         use_mock: モックモード
         limit: 投稿数の上限
@@ -434,6 +403,7 @@ def publish_to_wordpress(
     """
     Logger.header("WordPress投稿")
 
+    log_manager = PostLogManager()
     publisher = WordPressPublisher(use_mock=use_mock)
 
     if not publisher.is_configured() and not use_mock:
@@ -447,7 +417,64 @@ def publish_to_wordpress(
     Logger.info(f"上限: {limit}件" if limit else "上限: なし")
     Logger.info(f"モード: {'モック' if use_mock else '実投稿'}")
 
-    results = publisher.publish_all(output_dir=output_dir, status=status, limit=limit)
+    # CSVから投稿待ちのエントリを取得
+    pending_entries = log_manager.get_pending_entries()
+    
+    if limit:
+        pending_entries = pending_entries[:limit]
+
+    if not pending_entries:
+        Logger.warning("投稿待ちの記事がありません")
+        return {"total": 0, "success": 0, "failed": 0}
+
+    Logger.info(f"投稿対象: {len(pending_entries)}件")
+
+    results = {
+        "total": len(pending_entries),
+        "success": 0,
+        "failed": 0,
+        "posts": []
+    }
+
+    for entry in pending_entries:
+        filepath = entry.get("filepath", "")
+        isbn = entry.get("isbn", "")
+        region_id = entry.get("region_id", "")
+        title = entry.get("title", "")
+
+        if not filepath or not os.path.exists(filepath):
+            Logger.warning(f"ファイルが見つかりません: {filepath} (ISBN: {isbn}, Region: {region_id})")
+            results["failed"] += 1
+            log_manager.mark_as_failed(isbn, region_id, "ファイルが見つかりません")
+            continue
+
+        filename = os.path.basename(filepath)
+        Logger.info(f"  Publishing: {filename}")
+        Logger.info(f"    Title: {title}")
+
+        # 投稿実行
+        result = publisher.publish_file(filepath, status=status)
+
+        if result.success:
+            results["success"] += 1
+            Logger.success(f"    -> Success: {result.post_url}")
+            
+            # ログを更新（ファイル移動も含む）
+            log_manager.mark_as_posted(isbn, region_id, result.post_url or "")
+        else:
+            results["failed"] += 1
+            Logger.error(f"    -> Failed: {result.error}")
+            log_manager.mark_as_failed(isbn, region_id, result.error)
+
+        results["posts"].append({
+            "filepath": filepath,
+            "isbn": isbn,
+            "region_id": region_id,
+            "success": result.success,
+            "post_id": result.post_id,
+            "post_url": result.post_url,
+            "error": result.error
+        })
 
     Logger.header("投稿結果サマリー")
     Logger.info(f"総数:   {results['total']}件")
@@ -547,7 +574,6 @@ def main():
     # WordPress投稿
     if args.publish or args.publish_only:
         wp_results = publish_to_wordpress(
-            output_dir=OUTPUT_DIR,
             status=args.publish_status,
             use_mock=args.mock or not wp_configured,
             limit=args.publish_limit

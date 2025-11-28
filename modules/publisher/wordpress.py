@@ -523,6 +523,7 @@ class WordPressPublisher:
     ) -> Dict[str, Any]:
         """
         指定ディレクトリ内の全Markdownファイルを投稿する
+        （注意: ファイル移動は行わない。PostLogManagerが担当）
 
         Args:
             output_dir: 出力ディレクトリ

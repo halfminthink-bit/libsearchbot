@@ -26,7 +26,8 @@ from modules.generator.llm_client import ClaudeClient, LLMResponse
 
 
 # プレースホルダー定数（テンプレートとコードで共有）
-STOCK_TABLE_PLACEHOLDER = "[[STOCK_TABLE_HERE]]"
+STOCK_TABLE_PLACEHOLDER = "[[STOCK_TABLE]]"
+PROMO_BOX_PLACEHOLDER = "[[PROMO_BOX]]"
 
 
 # 地域システムIDと日本語名のマッピング（一部）
@@ -250,6 +251,117 @@ Kindle Unlimitedなら、対象の本が読み放題です。
         # 30%未満なら逼迫
         return (available / total) < 0.3
 
+    def _generate_simple_stock_table(self, stock_result: StockResult) -> str:
+        """
+        シンプルで清潔感のあるHTML在庫テーブルを生成
+
+        Args:
+            stock_result: 蔵書検索結果
+
+        Returns:
+            str: HTMLテーブル文字列
+        """
+        if not stock_result.libraries:
+            # フェイルセーフ: 蔵書情報がない場合
+            return """<div style="border: 1px solid #dee2e6; border-radius: 4px; padding: 16px; margin: 20px 0; background-color: #fff3cd; border-color: #ffc107;">
+<table style="width: 100%; border-collapse: collapse; margin: 0;">
+  <thead>
+    <tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+      <th style="padding: 12px; text-align: left; font-weight: 600; color: #212529;">図書館名</th>
+      <th style="padding: 12px; text-align: left; font-weight: 600; color: #212529;">貸出状況</th>
+      <th style="padding: 12px; text-align: left; font-weight: 600; color: #212529;">予約</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding: 12px; border-bottom: 1px solid #dee2e6;">全館</td>
+      <td style="padding: 12px; border-bottom: 1px solid #dee2e6; color: #dc3545;">🔴 貸出不可/調査中</td>
+      <td style="padding: 12px; border-bottom: 1px solid #dee2e6;"><a href="https://calil.jp/" target="_blank" rel="noopener" style="color: #0056b3; text-decoration: none;">確認</a></td>
+    </tr>
+  </tbody>
+</table>
+<p style="margin-top: 12px; margin-bottom: 0; font-size: 0.9em; color: #856404;">※人気のため予約が殺到しているか、システム反映待ちの可能性があります。<br><strong>今すぐ読みたい方は電子書籍がおすすめです！</strong></p>
+</div>"""
+
+        # テーブル行を生成
+        rows = []
+        for lib in stock_result.libraries:
+            status_emoji = self._get_status_emoji(lib.status)
+            status_color = "#28a745" if lib.status == "貸出可" else "#dc3545" if lib.status == "貸出中" else "#6c757d"
+            
+            reserve_cell = "-"
+            if lib.status != "蔵書なし" and lib.reserve_url:
+                reserve_cell = f'<a href="{lib.reserve_url}" target="_blank" rel="noopener" style="color: #0056b3; text-decoration: none;">予約する</a>'
+            
+            rows.append(f'''    <tr>
+      <td style="padding: 12px; border-bottom: 1px solid #dee2e6;">{lib.library_name}</td>
+      <td style="padding: 12px; border-bottom: 1px solid #dee2e6; color: {status_color};">{status_emoji} {lib.status}</td>
+      <td style="padding: 12px; border-bottom: 1px solid #dee2e6;">{reserve_cell}</td>
+    </tr>''')
+
+        # サマリー
+        available_count = sum(1 for lib in stock_result.libraries if lib.status == "貸出可")
+        total_count = len(stock_result.libraries)
+        summary = f'<p style="margin-top: 12px; margin-bottom: 0; font-size: 0.9em; color: #495057;"><strong>{total_count}館中 {available_count}館で貸出可能</strong> （調査時点）</p>'
+
+        return f'''<div style="border: 1px solid #dee2e6; border-radius: 4px; padding: 16px; margin: 20px 0; background-color: #ffffff;">
+<table style="width: 100%; border-collapse: collapse; margin: 0;">
+  <thead>
+    <tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+      <th style="padding: 12px; text-align: left; font-weight: 600; color: #212529;">図書館名</th>
+      <th style="padding: 12px; text-align: left; font-weight: 600; color: #212529;">貸出状況</th>
+      <th style="padding: 12px; text-align: left; font-weight: 600; color: #212529;">予約</th>
+    </tr>
+  </thead>
+  <tbody>
+{chr(10).join(rows)}
+  </tbody>
+</table>
+{summary}
+</div>'''
+
+    def _generate_simple_promo_box(
+        self,
+        kindle_url: str,
+        audible_url: str,
+        is_stock_scarce: bool = False
+    ) -> str:
+        """
+        ミニマルで洗練されたアフィリエイト誘導ブロックを生成
+
+        Args:
+            kindle_url: Kindle UnlimitedのURL
+            audible_url: AudibleのURL
+            is_stock_scarce: 在庫が逼迫しているかどうか
+
+        Returns:
+            str: HTMLブロック文字列
+        """
+        if is_stock_scarce:
+            message = "現在、図書館では予約待ちが発生しています。<br>お急ぎの方は、在庫切れのない電子書籍での読書がおすすめです。"
+            badge = '<span style="background-color: #FFF4E6; color: #D97706; font-size: 0.8em; padding: 2px 8px; border-radius: 4px; border: 1px solid #FCD34D; font-weight: bold; vertical-align: middle; margin-left: 8px;">予約待ち対策</span>'
+        else:
+            message = "「返却期限を気にせずゆっくり読みたい」という方は、電子書籍版もおすすめです。"
+            badge = ""
+
+        return f'''<div style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 24px; margin: 32px 0; background-color: #ffffff;">
+  <h3 style="margin-top: 0; margin-bottom: 16px; font-size: 1.1em; color: #111827; font-weight: 700; border-bottom: none; display: flex; align-items: center;">
+    📖 今すぐ読むなら {badge}
+  </h3>
+  <p style="margin-bottom: 20px; color: #4b5563; line-height: 1.7; font-size: 0.95em;">{message}</p>
+  
+  <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;">
+    <a href="{kindle_url}" target="_blank" rel="noopener" style="flex: 1; min-width: 200px; display: inline-flex; align-items: center; justify-content: center; padding: 14px 20px; background-color: #FF9900; color: white; text-decoration: none; border-radius: 6px; font-weight: 700; font-size: 0.95em; transition: opacity 0.2s;">
+      📚 Kindle Unlimited (30日無料)
+    </a>
+    <a href="{audible_url}" target="_blank" rel="noopener" style="flex: 1; min-width: 200px; display: inline-flex; align-items: center; justify-content: center; padding: 14px 20px; background-color: #232F3E; color: white; text-decoration: none; border-radius: 6px; font-weight: 700; font-size: 0.95em; transition: opacity 0.2s;">
+      🎧 Audibleで聴く (30日無料)
+    </a>
+  </div>
+  
+  <p style="margin-bottom: 0; font-size: 0.85em; color: #9ca3af; text-align: right;">※無料期間中に解約すれば料金はかかりません</p>
+</div>'''
+
     def create_outline(
         self,
         book_info: BookInfo,
@@ -273,7 +385,7 @@ Kindle Unlimitedなら、対象の本が読み放題です。
             book_title=book_info.title or "不明",
             author=book_info.author or "不明",
             publisher=book_info.publisher or "不明",
-            description=book_info.description[:300] if book_info.description else "情報なし",
+            description=book_info.description[:500] if book_info.description else "情報なし",
             region_name=region_name,
             stock_table_placeholder=STOCK_TABLE_PLACEHOLDER
         )
@@ -302,62 +414,39 @@ Kindle Unlimitedなら、対象の本が読み放題です。
         self,
         book_info: BookInfo,
         region_name: str,
-        stock_table_str: str,
-        outline: str,
-        stock_result: Optional[StockResult] = None
+        outline: str
     ) -> LLMResponse:
         """
         記事本文を生成する（Phase 2）
+        AIはテキスト部分のみ生成し、HTMLパーツは後からPythonで挿入
 
         Args:
             book_info: 書籍情報
             region_name: 地域名
-            stock_table_str: 在庫テーブル文字列
             outline: アウトライン
-            stock_result: 蔵書検索結果（在庫逼迫度計算用）
 
         Returns:
-            LLMResponse: 生成された記事本文
+            LLMResponse: 生成された記事本文（プレースホルダー含む）
         """
         # Jinja2テンプレートを読み込み
         template = self.jinja_env.get_template("draft_prompt.j2")
 
-        # 在庫逼迫度を計算
-        is_stock_scarce = self._calculate_scarcity(stock_result) if stock_result else False
-
-        # アフィリエイト関連の環境変数を取得
-        affiliate_tag = os.getenv("AMAZON_AFFILIATE_TAG", "mytag-22")
-        kindle_url = os.getenv("KINDLE_PROMO_URL", f"https://www.amazon.co.jp/kindle-dbs/hz/signup?tag={affiliate_tag}")
-        audible_url = os.getenv("AUDIBLE_PROMO_URL", f"https://www.amazon.co.jp/hz/audible/mlp?tag={affiliate_tag}")
-
-        # プロンプトをレンダリング
+        # プロンプトをレンダリング（シンプルに）
         prompt = template.render(
             book_title=book_info.title or "不明",
             author=book_info.author or "不明",
-            description=book_info.description[:300] if book_info.description else "情報なし",
-            region_name=region_name,
-            outline=outline,
-            stock_table_placeholder=STOCK_TABLE_PLACEHOLDER,
-            stock_table_string=stock_table_str,
-            isbn=book_info.isbn,
-            is_stock_scarce=is_stock_scarce,
-            affiliate_tag=affiliate_tag,
-            kindle_url=kindle_url,
-            audible_url=audible_url
+            description=book_info.description[:500] if book_info.description else "情報なし",
+            region_name=region_name
         )
 
         # モックモードの場合
         if self.llm_client.use_mock:
-            mock_article = self.MOCK_ARTICLE_TEMPLATE.format(
-                book_title=book_info.title or "書籍タイトル",
-                author=book_info.author or "著者名",
-                region_name=region_name,
-                stock_table=stock_table_str,
-                isbn=book_info.isbn,
-                affiliate_tag=affiliate_tag,
-                kindle_url=kindle_url,
-                audible_url=audible_url
-            )
+            mock_article = f"""{region_name}の図書館で『{book_info.title or "書籍タイトル"}』を借りよう！無料で読める場所と在庫情報
+---
+この本を無料で読みたいという方に、図書館での在庫状況をご案内します。
+---
+この本は、多くの読者から支持されている人気作です。図書館でも常に貸出中で、予約待ちになることが多い一冊です。
+"""
             return LLMResponse(
                 content=mock_article,
                 model="mock",
@@ -367,7 +456,7 @@ Kindle Unlimitedなら、対象の本が読み放題です。
         # LLMで記事生成
         return self.llm_client.generate(
             prompt=prompt,
-            system_prompt="あなたは地元の図書館事情に詳しいベテラン司書兼ブックガイドです。",
+            system_prompt="あなたは図書館のベテラン司書です。",
             temperature=0.7,
             max_tokens=8192
         )
@@ -417,17 +506,12 @@ Kindle Unlimitedなら、対象の本が読み放題です。
         total_input_tokens += outline_response.input_tokens
         total_output_tokens += outline_response.output_tokens
 
-        # 在庫テーブルを生成
-        stock_table_str = self.format_stock_table(stock_result)
-
-        # Phase 2: 記事本文生成
+        # Phase 2: 記事本文生成（AIはテキスト部分のみ生成）
         print("    Phase 2: 記事本文生成中...")
         draft_response = self.create_draft(
             book_info,
             region_name,
-            stock_table_str,
-            outline_response.content,
-            stock_result
+            outline_response.content
         )
 
         if not draft_response.is_success():
@@ -440,11 +524,60 @@ Kindle Unlimitedなら、対象の本が読み放題です。
         total_input_tokens += draft_response.input_tokens
         total_output_tokens += draft_response.output_tokens
 
-        # 記事タイトルを生成
-        article_title = f"【{region_name}】『{book_info.title}』の在庫がある図書館・貸出状況まとめ"
+        # 在庫逼迫度を計算
+        is_stock_scarce = self._calculate_scarcity(stock_result) if stock_result else False
+
+        # アフィリエイト関連の環境変数を取得
+        affiliate_tag = os.getenv("AMAZON_AFFILIATE_TAG", "mytag-22")
+        kindle_url = os.getenv("KINDLE_PROMO_URL", f"https://www.amazon.co.jp/kindle-dbs/hz/signup?tag={affiliate_tag}")
+        audible_url = os.getenv("AUDIBLE_PROMO_URL", f"https://www.amazon.co.jp/hz/audible/mlp?tag={affiliate_tag}")
+
+        # Python側でHTMLパーツを生成
+        stock_html = self._generate_simple_stock_table(stock_result)
+        promo_html = self._generate_simple_promo_box(kindle_url, audible_url, is_stock_scarce)
+
+        # AI出力を `---` で分割
+        parts = draft_response.content.split("---")
+        
+        # パーツを抽出（空白行を除去）
+        h1_title = ""
+        intro_text = ""
+        review_text = ""
+        
+        if len(parts) >= 3:
+            h1_title = parts[0].strip().replace("# ", "").strip()  # 念のため#除去
+            intro_text = parts[1].strip()
+            review_text = parts[2].strip()
+        elif len(parts) == 2:
+            # 2パーツしかない場合（フォールバック）
+            h1_title = parts[0].strip().replace("# ", "").strip()
+            intro_text = parts[1].strip()
+            review_text = ""
+        else:
+            # 分割失敗時のフォールバック
+            h1_title = f"【{region_name}】『{book_info.title}』の在庫がある図書館・貸出状況まとめ"
+            intro_text = draft_response.content
+            review_text = ""
+
+        # 記事タイトルを設定
+        article_title = h1_title if h1_title else f"【{region_name}】『{book_info.title}』の在庫がある図書館・貸出状況まとめ"
+
+        # 記事を組み立て（結合）
+        final_content = f"""# {h1_title}
+
+{intro_text}
+
+## {region_name}の図書館在庫・貸出状況
+{stock_html}
+
+## この本が「予約殺到」する理由
+{review_text}
+
+{promo_html}
+"""
 
         return BuildResult(
-            content=draft_response.content,
+            content=final_content,
             outline=outline_response.content,
             is_mock=outline_response.is_mock or draft_response.is_mock,
             input_tokens=total_input_tokens,
